@@ -16,7 +16,7 @@ jobs:
   release:
     # Retrieve tag and create release
     name: Create Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04-8core
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
@@ -41,16 +41,16 @@ jobs:
 
   wheel:
     name: Build Wheel
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-20.04-16core
     needs: release
 
     strategy:
       fail-fast: false
       matrix:
           os: ['ubuntu-20.04']
-          python-version: ['3.8', '3.9', '3.10', '3.11']
+          python-version: ['3.11']
           pytorch-version: ['2.3.1']  # Must be the most recent version that meets requirements-cuda.txt.
-          cuda-version: ['11.8', '12.1']
+          cuda-version: ['12.1']
 
     steps:
       - name: Checkout
