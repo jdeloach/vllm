@@ -1,6 +1,13 @@
-from vllm.triton_utils.custom_cache_manager import (
-    maybe_set_triton_cache_manager)
+# SPDX-License-Identifier: Apache-2.0
 
-__all__ = [
-    "maybe_set_triton_cache_manager",
-]
+from vllm.triton_utils.importing import (HAS_TRITON, TritonLanguagePlaceholder,
+                                         TritonPlaceholder)
+
+if HAS_TRITON:
+    import triton
+    import triton.language as tl
+else:
+    triton = TritonPlaceholder()
+    tl = TritonLanguagePlaceholder()
+
+__all__ = ["HAS_TRITON", "triton", "tl"]

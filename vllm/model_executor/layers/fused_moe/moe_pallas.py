@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import torch
 import torch.nn.functional as F
 from torch_xla.experimental.custom_kernel import _histogram
@@ -9,7 +11,9 @@ def fused_moe(
     w2: torch.Tensor,
     gating_output: torch.Tensor,
     topk: int,
-    renormalize: bool,
+    global_num_experts: int,
+    expert_map: torch.Tensor = None,
+    renormalize: bool = False,
 ) -> torch.Tensor:
     """
     Args:
@@ -18,6 +22,7 @@ def fused_moe(
         w2: [num_experts, hidden_size, intermediate_size]
         gating_output: [*, num_experts]
     """
+    assert expert_map is None, "expert_map is not supported for pallas MoE."
     orig_shape = hidden_states.shape
     hidden_size = hidden_states.shape[-1]
     num_tokens = hidden_states.shape[:-1].numel()

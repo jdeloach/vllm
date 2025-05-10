@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import weakref
 
 import pytest
@@ -5,9 +7,8 @@ import pytest
 from huggingface_hub import snapshot_download
 
 from vllm import LLM
+from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.lora.request import LoRARequest
-
-from ...conftest import cleanup
 
 MODEL_NAME = "HuggingFaceH4/zephyr-7b-beta"
 
@@ -22,7 +23,19 @@ LORA_NAME = "typeof/zephyr-7b-beta-lora"
 
 
 @pytest.fixture(scope="module")
-def llm():
+def monkeypatch_module():
+    from _pytest.monkeypatch import MonkeyPatch
+    mpatch = MonkeyPatch()
+    yield mpatch
+    mpatch.undo()
+
+
+@pytest.fixture(scope="module", params=[False, True])
+def llm(request, monkeypatch_module):
+
+    use_v1 = request.param
+    monkeypatch_module.setenv('VLLM_USE_V1', '1' if use_v1 else '0')
+
     # pytest caches the fixture so we use weakref.proxy to
     # enable garbage collection
     llm = LLM(model=MODEL_NAME,
@@ -39,7 +52,7 @@ def llm():
 
         del llm
 
-    cleanup()
+    cleanup_dist_env_and_memory()
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +63,7 @@ def zephyr_lora_files():
 @pytest.mark.skip_global_cleanup
 def test_multiple_lora_requests(llm: LLM, zephyr_lora_files):
     lora_request = [
-        LoRARequest(LORA_NAME, idx + 1, zephyr_lora_files)
+        LoRARequest(LORA_NAME + str(idx), idx + 1, zephyr_lora_files)
         for idx in range(len(PROMPTS))
     ]
     # Multiple SamplingParams should be matched with each prompt

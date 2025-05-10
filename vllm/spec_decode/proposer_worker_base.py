@@ -1,12 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from abc import ABC, abstractmethod
 from typing import List, Optional, Set, Tuple
 
-from vllm.sequence import ExecuteModelRequest, SamplerOutput
+from vllm.model_executor.layers.sampler import SamplerOutput
+from vllm.sequence import ExecuteModelRequest
 from vllm.spec_decode.interfaces import SpeculativeProposer
-from vllm.worker.worker_base import LoraNotSupportedWorkerBase
+from vllm.worker.worker_base import LoRANotSupportedWorkerBase
 
 
-class ProposerWorkerBase(LoraNotSupportedWorkerBase, SpeculativeProposer):
+class ProposerWorkerBase(LoRANotSupportedWorkerBase, SpeculativeProposer):
     """Interface for proposer workers"""
 
     @abstractmethod
@@ -25,6 +28,10 @@ class ProposerWorkerBase(LoraNotSupportedWorkerBase, SpeculativeProposer):
         raise NotImplementedError
 
     def set_include_gpu_probs_tensor(self) -> None:
+        """Implementation optional"""
+        pass
+
+    def set_should_modify_greedy_probs_inplace(self) -> None:
         """Implementation optional"""
         pass
 

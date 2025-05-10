@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tests whether FP8 computation is enabled correctly.
 
 Run `pytest tests/quantization/test_fp8.py --forked`.
@@ -9,6 +10,7 @@ from tests.quantization.utils import is_quant_method_supported
 from vllm import _custom_ops as ops
 from vllm.model_executor.layers.quantization.fp8 import (Fp8KVCacheMethod,
                                                          Fp8LinearMethod)
+from vllm.platforms import current_platform
 
 MODELS = [
     "neuralmagic/Meta-Llama-3-8B-Instruct-FP8-KV",
@@ -20,7 +22,18 @@ MODELS = [
 @pytest.mark.skipif(not is_quant_method_supported("fp8"),
                     reason="FP8 is not supported on this GPU type.")
 @pytest.mark.parametrize("model_id", MODELS)
-def test_model_load_and_run(vllm_runner, model_id: str):
+@pytest.mark.parametrize("force_marlin", [False, True])
+@pytest.mark.parametrize(
+    "use_rocm_aiter", [True, False] if current_platform.is_rocm() else [False])
+def test_model_load_and_run(vllm_runner, model_id: str, force_marlin: bool,
+                            use_rocm_aiter: bool, monkeypatch) -> None:
+
+    if use_rocm_aiter:
+        monkeypatch.setenv("VLLM_ROCM_USE_AITER", "1")
+
+    if force_marlin:
+        monkeypatch.setenv("VLLM_TEST_FORCE_FP8_MARLIN", "1")
+
     with vllm_runner(model_id) as llm:
         # note: this does not test accuracy, just that we can run through
         # see lm-eval tests for accuracy
@@ -40,16 +53,39 @@ KV_CACHE_MODELS = [
 @pytest.mark.skipif(not is_quant_method_supported("fp8"),
                     reason="FP8 is not supported on this GPU type.")
 @pytest.mark.parametrize("model_id", KV_CACHE_MODELS)
-def test_kv_cache_model_load_and_run(vllm_runner, model_id: str):
+@pytest.mark.parametrize(
+    "use_rocm_aiter", [True, False] if current_platform.is_rocm() else [False])
+def test_kv_cache_model_load_and_run(vllm_runner, model_id: str,
+                                     use_rocm_aiter: bool, monkeypatch):
+    if use_rocm_aiter:
+        monkeypatch.setenv("VLLM_ROCM_USE_AITER", "1")
+
+    # vllm_runner.apply_model() relies on V0 internals.
+    monkeypatch.setenv("VLLM_USE_V1", "0")
     with vllm_runner(model_id, kv_cache_dtype="fp8") as llm:
 
-        model = llm.model.llm_engine.model_executor.driver_worker.model_runner.model  # noqa: E501
-        attn = model.model.layers[0].self_attn.attn
-        assert isinstance(attn.quant_method, Fp8KVCacheMethod)
-        # NOTE: it is valid for scales to be 1.0 (default value), but we know
-        # these checkpoints have scales < 1.0
-        assert 0.0 < attn._k_scale < 1.0
-        assert 0.0 < attn._v_scale < 1.0
+        def check_model(model):
+            attn = model.model.layers[0].self_attn.attn
+
+            assert isinstance(attn.quant_method, Fp8KVCacheMethod)
+
+            if not current_platform.is_rocm():
+                # NOTE: This code path requires validation on Non-CUDA platform
+                # NOTE: it is valid for scales to be 1.0 (default value), but
+                # we know these checkpoints have scales < 1.0
+                assert 0.0 < attn._k_scale < 1.0
+                assert 0.0 < attn._v_scale < 1.0
+            else:
+                # NOTE: This code path is for ROCm platform
+                # NOTE: it is valid for scales to be 1.0 (default value), but
+                # we know these checkpoints have scales < 1.0
+                # However on ROCm platform, the _k_scale and _v_scale will be
+                # scaled by a factor of 2 as described in
+                # vllm/model_executor/layers/quantization/kv_cache.py
+                assert 0.0 < attn._k_scale < (1.0 * 2.0)
+                assert 0.0 < attn._v_scale < (1.0 * 2.0)
+
+        llm.apply_model(check_model)
 
         # note: this does not test accuracy, just that we can run through
         # see lm-eval tests for accuracy
@@ -61,29 +97,55 @@ def test_kv_cache_model_load_and_run(vllm_runner, model_id: str):
 @pytest.mark.skipif(not is_quant_method_supported("fp8"),
                     reason="FP8 is not supported on this GPU type.")
 @pytest.mark.parametrize("kv_cache_dtype", ["auto", "fp8"])
-def test_load_fp16_model(vllm_runner, kv_cache_dtype: str) -> None:
+@pytest.mark.parametrize("force_marlin", [False, True])
+@pytest.mark.parametrize(
+    "use_rocm_aiter", [True, False] if current_platform.is_rocm() else [False])
+def test_load_fp16_model(vllm_runner, kv_cache_dtype: str, force_marlin: bool,
+                         use_rocm_aiter: bool, monkeypatch) -> None:
+    if use_rocm_aiter:
+        monkeypatch.setenv("VLLM_ROCM_USE_AITER", "1")
+
+    # vllm_runner.apply_model() relies on V0 internals.
+    monkeypatch.setenv("VLLM_USE_V1", "0")
+
+    if force_marlin:
+        monkeypatch.setenv("VLLM_TEST_FORCE_FP8_MARLIN", "1")
+
     with vllm_runner("facebook/opt-125m",
                      quantization="fp8",
                      kv_cache_dtype=kv_cache_dtype) as llm:
 
-        model = llm.model.llm_engine.model_executor.driver_worker.model_runner.model  # noqa: E501
-        fc1 = model.model.decoder.layers[0].fc1
-        assert isinstance(fc1.quant_method, Fp8LinearMethod)
-        if kv_cache_dtype == "fp8":
-            attn = model.model.decoder.layers[0].self_attn.attn
-            assert isinstance(attn.quant_method, Fp8KVCacheMethod)
-            assert attn._k_scale == 1.0
-            assert attn._v_scale == 1.0
+        def check_model(model):
+            fc1 = model.model.decoder.layers[0].fc1
+            assert isinstance(fc1.quant_method, Fp8LinearMethod)
+            if kv_cache_dtype == "fp8":
+                attn = model.model.decoder.layers[0].self_attn.attn
+                assert isinstance(attn.quant_method, Fp8KVCacheMethod)
+                assert attn._k_scale == 1.0
+                assert attn._v_scale == 1.0
 
-        capability = torch.cuda.get_device_capability()
-        capability = capability[0] * 10 + capability[1]
-        if capability >= 89:
-            # For GPUs with hardware support, we keep weights in fp8
-            assert fc1.weight.dtype == torch.float8_e4m3fn
-        else:
-            # For GPUs without hardware support, we pack the fp8 weights
-            # for weight-only quantization using Marlin kernels
-            assert fc1.weight.dtype == torch.int32
+            if current_platform.is_cuda():
+                if current_platform.supports_fp8() and not force_marlin:
+                    # For GPUs with hardware support, we keep weights in fp8
+                    assert fc1.weight.dtype == torch.float8_e4m3fn
+                else:
+                    # For GPUs without hardware support, we pack the fp8 weights
+                    # for weight-only quantization using Marlin kernels
+                    assert fc1.weight.dtype == torch.int32
+            elif current_platform.is_rocm():
+                if current_platform.supports_fp8() and not force_marlin:
+                    # For GPUs with hardware support, we keep weights in fp8
+                    assert fc1.weight.dtype == current_platform.fp8_dtype()
+                else:  # unsupported ROCm platform
+                    pytest.skip(
+                        "Skip `test_load_fp16_model`. "
+                        "It only runs on ROCm platform with FP8 compute."
+                        " e.g. MI300X and above.")
+            else:  # unsupported platform
+                pytest.skip("Skip `test_load_fp16_model`. "
+                            "It only runs on CUDA and ROCm platform.")
+
+        llm.apply_model(check_model)
 
 
 @pytest.mark.skipif(not is_quant_method_supported("fp8"),
@@ -116,16 +178,18 @@ def test_scaled_fp8_quant(dtype) -> None:
 
     # Reference dynamic quantizaton
     y = quantize_ref(x, inv_scale)
-    assert torch.allclose(ref_y, per_tensor_dequantize(y, inv_scale, dtype))
+    torch.testing.assert_close(ref_y,
+                               per_tensor_dequantize(y, inv_scale, dtype))
 
     # Static quantization
     y, _ = ops.scaled_fp8_quant(x, inv_scale)
-    assert torch.allclose(ref_y, per_tensor_dequantize(y, inv_scale, dtype))
+    torch.testing.assert_close(ref_y,
+                               per_tensor_dequantize(y, inv_scale, dtype))
 
     # Padding
-    y, _ = ops.scaled_fp8_quant(x, inv_scale, batch_dim_padding=17)
+    y, _ = ops.scaled_fp8_quant(x, inv_scale, num_token_padding=17)
     assert y.shape[0] == 17
-    assert torch.allclose(
+    torch.testing.assert_close(
         ref_y,
         per_tensor_dequantize(torch.narrow(y, 0, 0, x.shape[0]), inv_scale,
                               dtype))

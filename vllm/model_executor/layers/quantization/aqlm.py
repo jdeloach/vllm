@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Supports AQLM compression, see https://github.com/Vahe1994/AQLM
 # and https://arxiv.org/pdf/2401.06118.pdf
 
@@ -10,6 +12,7 @@ from torch.nn.parameter import Parameter
 
 from vllm import _custom_ops as ops
 from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase
+from vllm.model_executor.layers.quantization import QuantizationMethods
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.utils import set_weight_attrs
@@ -95,7 +98,7 @@ def generic_dequantize_gemm(
     codebooks: torch.
     Tensor,  #  [num_codebooks, codebook_size, out_group_size, in_group_size]
     scales: torch.Tensor,  #  [num_out_groups, 1, 1, 1]
-    output_partition_sizes: torch.IntTensor,
+    output_partition_sizes: List[int],
     bias: Optional[torch.Tensor],
 ) -> torch.Tensor:
     output_shape = input.shape[:-1] + (scales.shape[0], )
@@ -133,7 +136,7 @@ def optimized_dequantize_gemm(
     codebooks: torch.
     Tensor,  #  [num_codebooks, codebook_size, out_group_size, in_group_size]
     scales: torch.Tensor,  #  [num_out_groups, 1, 1, 1]
-    output_partition_sizes: torch.IntTensor,
+    output_partition_sizes: List[int],
     bias: Optional[torch.Tensor],
 ) -> torch.Tensor:
     weights = ops.aqlm_dequant(codes, codebooks, output_partition_sizes)
@@ -167,6 +170,7 @@ class AQLMConfig(QuantizationConfig):
         num_codebooks: int,
         out_group_size: int,
     ) -> None:
+        super().__init__()
         self.in_group_size = in_group_size
         self.nbits_per_codebook = nbits_per_codebook
         self.num_codebooks = num_codebooks
@@ -183,7 +187,7 @@ class AQLMConfig(QuantizationConfig):
                 f"out_group_size={self.out_group_size})")
 
     @classmethod
-    def get_name(cls) -> str:
+    def get_name(cls) -> QuantizationMethods:
         return "aqlm"
 
     @classmethod
@@ -212,9 +216,6 @@ class AQLMConfig(QuantizationConfig):
         if isinstance(layer, LinearBase):
             return AQLMLinearMethod(self)
         return None
-
-    def get_scaled_act_names(self) -> List[str]:
-        return []
 
 
 class AQLMLinearMethod(LinearMethodBase):
@@ -288,10 +289,8 @@ class AQLMLinearMethod(LinearMethodBase):
             codebooks,
             {
                 # metadata indicates fixed size concatenated along dim 0
-                "is_metadata":
-                True,
-                "output_partition_sizes":
-                torch.tensor(output_partition_sizes, device='cpu'),
+                "is_metadata": True,
+                "output_partition_sizes": output_partition_sizes
             },
         )
 
@@ -334,7 +333,7 @@ class AQLMLinearMethod(LinearMethodBase):
         codes = layer.codes
         scales = layer.scales
         output_partition_sizes = getattr(codebooks, "output_partition_sizes",
-                                         None)
+                                         [])
 
         nbooks = codes.shape[2]
         ingroups = codebooks.shape[3]
